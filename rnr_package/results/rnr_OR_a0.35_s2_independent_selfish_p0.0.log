@@ -1,0 +1,18 @@
+  p=0 solve reused from results/p0cache_s2_selfish.npz
+{
+ "pair": "OR",
+ "alpha": 0.35,
+ "seat": 2,
+ "p": 0.0,
+ "restrict": "independent",
+ "free": "selfish",
+ "iters": 600,
+ "p0_cached": true,
+ "vs_biased": 0.3072324241415476,
+ "adversary_seat0": -0.11964650958562072,
+ "selfish_seat0": 0.07430812128306763,
+ "adversary_seat1": -0.13027446358971984,
+ "selfish_seat1": 0.14624137257162628,
+ "worst_adversary": -0.13027446358971984,
+ "worst_selfish": 0.07430812128306763
+}

@@ -1,0 +1,29 @@
+  iter 50/600  [198s]
+  iter 100/600  [394s]
+  iter 150/600  [588s]
+  iter 200/600  [792s]
+  iter 250/600  [1028s]
+  iter 300/600  [1285s]
+  iter 350/600  [1515s]
+  iter 400/600  [1767s]
+  iter 450/600  [2003s]
+  iter 500/600  [2268s]
+  iter 550/600  [2492s]
+  iter 600/600  [2708s]
+{
+ "pair": "FF",
+ "alpha": 0.35,
+ "seat": 0,
+ "p": 0.9,
+ "restrict": "independent",
+ "free": "selfish",
+ "iters": 600,
+ "vs_biased": 1.6135066296771887,
+ "adversary_seat1": -1.1790634852226451,
+ "selfish_seat1": -0.6254663270755774,
+ "adversary_seat2": -1.1852549292534817,
+ "selfish_seat2": -0.5812723334823054,
+ "worst_adversary": -1.1852549292534817,
+ "worst_selfish": -0.6254663270755774
+}
+gaps: {'learner': np.float64(6e-05), 'free_1': np.float64(0.00068), 'free_2': np.float64(0.00058)}
