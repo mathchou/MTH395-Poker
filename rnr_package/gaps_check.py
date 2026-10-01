@@ -33,19 +33,17 @@ import numpy as np
 
 from tree_engine import Tree
 from q1_alpha_sweep import perturb
+from cfr_path import find_cfr
 
 RESULTS = "results"
-CFR_CANDIDATES = ["cfr_3p_5000.pkl", "cfr_3p_1000.pkl"]   # 5k contents may be saved under either name
 
 
 def load_base():
-    for f in CFR_CANDIDATES:
-        if os.path.exists(f):
-            blob = pickle.load(open(f, "rb"))
-            print(f"CFR baseline: {f} ({blob.get('iters', '?')} iterations, "
-                  f"nash_conv {blob.get('nash_conv', float('nan')):.4f})")
-            return blob["table"]
-    raise SystemExit(f"no CFR table found; looked for {CFR_CANDIDATES}")
+    f = find_cfr()
+    blob = pickle.load(open(f, "rb"))
+    print(f"CFR baseline: {f} ({blob.get('iters', '?')} iterations, "
+          f"nash_conv {blob.get('nash_conv', float('nan')):.4f})")
+    return blob["table"]
 
 
 def setup():

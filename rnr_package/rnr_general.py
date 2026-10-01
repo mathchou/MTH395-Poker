@@ -37,13 +37,14 @@ import numpy as np
 
 from tree_engine import Tree
 from q1_alpha_sweep import perturb
+from cfr_path import find_cfr
 
 OUT = "results"
 
 
-def load(pair, alpha, seat, cfr="cfr_3p_1000.pkl"):
+def load(pair, alpha, seat, cfr=None):
     T = Tree()
-    base = pickle.load(open(cfr, "rb"))["table"]
+    base = pickle.load(open(find_cfr(cfr), "rb"))["table"]
     opps = [o for o in range(3) if o != seat]
     fix = {o: T.from_table(perturb(base, t, alpha), o) for o, t in zip(opps, pair)}
     base_sig = [T.from_table(base, q) for q in range(3)]

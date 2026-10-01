@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import time
+from cfr_path import find_cfr
 
 PY = sys.executable
 LOGS = os.path.join("overnight", "logs")
@@ -29,10 +30,7 @@ PAIRS = [a + b for a in "ORCF" for b in "ORCF"]
 
 
 def cfr5k():
-    for f in ("cfr_3p_5000.pkl", "cfr_3p_1000.pkl"):
-        if os.path.exists(f):
-            return f
-    raise SystemExit("no CFR table found")
+    return find_cfr()
 
 
 def jobs(nshards, cfr1k):

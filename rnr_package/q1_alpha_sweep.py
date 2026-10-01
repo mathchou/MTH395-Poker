@@ -30,6 +30,7 @@ import time
 
 import numpy as np
 import pyspiel
+from cfr_path import find_cfr
 
 FAV = {"R": 2, "C": 1, "F": 0}
 TYPES = ["O", "R", "C", "F"]
@@ -68,7 +69,7 @@ def merge(tables_by_seat):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cfr", default="cfr_3p_1000.pkl")
+    ap.add_argument("--cfr", default=None)
     ap.add_argument("--alphas", nargs="+", type=float,
                     default=[0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0])
     ap.add_argument("--save-br", nargs="*", type=float, default=[0.1, 0.35],
@@ -76,7 +77,7 @@ def main():
     ap.add_argument("--cache", default="q1_results.json")
     args = ap.parse_args()
 
-    base = pickle.load(open(args.cfr, "rb"))["table"]
+    base = pickle.load(open(find_cfr(args.cfr), "rb"))["table"]
     game = pyspiel.load_game("leduc_poker", {"players": 3})
     root = game.new_initial_state()
     cache = json.load(open(args.cache)) if os.path.exists(args.cache) else {}

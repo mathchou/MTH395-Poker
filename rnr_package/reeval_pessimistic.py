@@ -30,6 +30,7 @@ import numpy as np
 
 from tree_engine import Tree
 from q1_alpha_sweep import perturb
+from cfr_path import find_cfr
 
 RESULTS = "results"
 OUTDIR = os.path.join(RESULTS, "pess")
@@ -81,7 +82,7 @@ def main():
     ap.add_argument("--nshards", type=int, default=1)
     a = ap.parse_args()
 
-    cfr = a.cfr or next(f for f in ("cfr_3p_5000.pkl", "cfr_3p_1000.pkl") if os.path.exists(f))
+    cfr = find_cfr(a.cfr)
     base, iters = load_table(cfr)
     print(f"baseline {cfr} ({iters} iterations), eps {a.eps}", flush=True)
     b1 = load_table(a.cfr1k)[0] if a.cfr1k else None

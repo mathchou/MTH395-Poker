@@ -34,6 +34,7 @@ import numpy as np
 import pyspiel
 
 from q1_alpha_sweep import perturb, merge, TYPES, FAV, seat_of
+from cfr_path import find_cfr
 
 SEAT_OPP = 1     # measure the deviation rate for an opponent seat
 
@@ -63,11 +64,11 @@ def reach_weights(game, base, player):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cfr", default="cfr_3p_1000.pkl")
+    ap.add_argument("--cfr", default=None)
     ap.add_argument("--m", nargs="+", type=float, default=[0.1, 0.25, 0.5])
     args = ap.parse_args()
 
-    base = pickle.load(open(args.cfr, "rb"))["table"]
+    base = pickle.load(open(find_cfr(args.cfr), "rb"))["table"]
     game = pyspiel.load_game("leduc_poker", {"players": 3})
     root = game.new_initial_state()
 

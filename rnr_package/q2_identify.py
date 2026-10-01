@@ -36,6 +36,7 @@ import time
 
 import numpy as np
 import pyspiel
+from cfr_path import find_cfr
 
 FAV = {"R": 2, "C": 1, "F": 0}
 TYPES = ["O", "R", "C", "F"]
@@ -187,7 +188,7 @@ def summarize(res, hands):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cfr", default="cfr_3p_1000.pkl")
+    ap.add_argument("--cfr", default=None)
     ap.add_argument("--alpha", type=float, default=0.35)
     ap.add_argument("--pairs", nargs="+", default=["OO", "RO", "CO", "FO"])
     ap.add_argument("--sessions", type=int, default=20)
@@ -196,7 +197,7 @@ def main():
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    base = pickle.load(open(args.cfr, "rb"))["table"]
+    base = pickle.load(open(find_cfr(args.cfr), "rb"))["table"]
     t0 = time.time()
     res = run(args.alpha, args.pairs, args.sessions, args.hands, args.seed, base)
     print(f"alpha {args.alpha}, {args.sessions} sessions x {args.hands} hands "
