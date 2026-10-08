@@ -25,6 +25,12 @@ linear-mixing baseline is written to results/linear_<tag>.json.
     python rnr_general.py --pair FF --alpha 0.35 --seat 0 --p 0.5 \\
         --restrict independent --free selfish --iters 400
 
+Different bias for each opponent: --alpha applies to the first opponent, --alpha2 to the
+second. Mixed-alpha runs should go to their own folder, so existing analysis scripts (which
+group results by a single alpha) never mix them in:
+
+    python rnr_general.py --pair FR --alpha 0.35 --alpha2 0.1 --out results_het
+
 HOW THE SOLVER WORKS (read this first)
 --------------------------------------
 OpenSpiel's CFR+ solves a game in which every player learns. A restricted Nash response
@@ -72,27 +78,31 @@ from tree_engine import Tree            # the flattened game tree and its passes
 from q1_alpha_sweep import perturb      # builds a biased opponent from the equilibrium
 from cfr_path import find_cfr           # which CFR table to read (shared by all scripts)
 
-OUT = "results"                         # every output file goes here
+OUT = "results"                         # every output file goes here (--out)
+CACHE_DIR = "results"                   # where the shared p = 0 solve is cached (--cache-dir)
 
 
 # ---------------------------------------------------------------------------------
 # Setup: the game tree, the equilibrium, and the two biased opponents
 # ---------------------------------------------------------------------------------
 
-def load(pair, alpha, seat, cfr=None):
+def load(pair, alpha, seat, cfr=None, alpha2=None):
     """
     Returns
         T         the tree engine (1.83M-node Leduc tree as arrays)
         base_sig  the CFR equilibrium, one flat strategy array per seat
         opps      the two opponent seats, in increasing order (e.g. [1, 2] when seat = 0)
         fix       {opponent seat: its biased strategy}; pair letter k goes to opps[k]
+
+    alpha is the first opponent's bias; alpha2 the second's (None = same as alpha).
     """
     T = Tree()
     base = pickle.load(open(find_cfr(cfr), "rb"))["table"]          # the equilibrium as a dict
     opps = [o for o in range(3) if o != seat]                        # everyone except us
     # Pair "FR" from seat 0: opps = [1, 2], so seat 1 gets type F and seat 2 type R.
     # perturb() tilts the equilibrium toward the favoured action by alpha.
-    fix = {o: T.from_table(perturb(base, t, alpha), o) for o, t in zip(opps, pair)}
+    alphas = [alpha, alpha if alpha2 is None else alpha2]           # one bias per opponent
+    fix = {o: T.from_table(perturb(base, t, a), o) for o, t, a in zip(opps, pair, alphas)}
     base_sig = [T.from_table(base, q) for q in range(3)]            # equilibrium, flat form
     return T, base_sig, opps, fix
 
@@ -169,17 +179,24 @@ def combos(opps, p, restrict):
 # The solver
 # ---------------------------------------------------------------------------------
 
+def alpha_tag(args):
+    """'0.35' when both opponents share alpha (unchanged file names); '0.35-0.1' when not."""
+    if args.alpha2 is None or args.alpha2 == args.alpha:
+        return f"{args.alpha}"
+    return f"{args.alpha}-{args.alpha2}"
+
+
 def solve(args):
     # Two adversarial free opponents in the same world would both be minimising OUR
     # payoff together, i.e. colluding. The study assumes no collusion, so refuse.
     if args.restrict == "independent" and args.free == "adversarial":
         raise SystemExit("independent + adversarial = coalition of free opponents; "
                          "violates no-collusion. Use --free selfish.")
-    T, base_sig, opps, fix = load(args.pair, args.alpha, args.seat)
+    T, base_sig, opps, fix = load(args.pair, args.alpha, args.seat, alpha2=args.alpha2)
     s = args.seat                             # our seat
     U = T.util                                # payoffs at every node: U[:, seat]
     # Output file name, e.g. FF_a0.35_s0_independent_selfish_p0.5[_suffix]
-    tag = f"{args.pair}_a{args.alpha}_s{s}_{args.restrict}_{args.free}_p{args.p}"
+    tag = f"{args.pair}_a{alpha_tag(args)}_s{s}_{args.restrict}_{args.free}_p{args.p}"
     if args.suffix:
         tag += f"_{args.suffix}"
     use_cache = not args.suffix and args.seed is None      # independent re-solves bypass the cache
@@ -189,12 +206,13 @@ def solve(args):
     # biased models never enter the modified game: the solve is identical for every
     # pair and every alpha. Solve once per (seat, free) and reuse; only the evaluation
     # depends on the pair.
-    cache = f"{OUT}/p0cache_s{s}_{args.free}.npz"
+    # (Also independent of the opponents' alphas, so mixed-alpha runs can share it.)
+    cache = f"{CACHE_DIR}/p0cache_s{s}_{args.free}.npz"
     if use_cache and args.restrict == "independent" and args.p == 0 and os.path.exists(cache):
         z = np.load(cache, allow_pickle=True)
         s0, gaps = z["s0"], z["gaps"].item()          # our strategy and its convergence gaps
         print(f"  p=0 solve reused from {cache}", flush=True)
-        res = {"pair": args.pair, "alpha": args.alpha, "seat": s, "p": args.p,
+        res = {"pair": args.pair, "alpha": args.alpha, "alpha2": args.alpha if args.alpha2 is None else args.alpha2, "seat": s, "p": args.p,
                "restrict": args.restrict, "free": args.free, "iters": int(z["iters"]),
                "gaps": gaps, "p0_cached": True, **evaluate(T, s0, s, opps, fix)}
         json.dump(res, open(f"{OUT}/rnr_{tag}.json", "w"), indent=1)
@@ -299,7 +317,7 @@ def solve(args):
         gaps[f"free_{o}"] = v_br - v_now
 
     # ---- evaluate our strategy in the REAL game and save everything ----
-    res = {"pair": args.pair, "alpha": args.alpha, "seat": s, "p": args.p,
+    res = {"pair": args.pair, "alpha": args.alpha, "alpha2": args.alpha if args.alpha2 is None else args.alpha2, "seat": s, "p": args.p,
            "restrict": args.restrict, "free": args.free, "iters": args.iters,
            "gaps": gaps, **evaluate(T, avg[s], s, opps, fix)}
     if use_cache and args.restrict == "independent" and args.p == 0:
@@ -350,7 +368,7 @@ def linear(args):
         (1 - w) * equilibrium + w * best response to the biased pair
     for w = 0, 0.1, ..., 1, and evaluate each. w = 0 is plain CFR, w = 1 the best response.
     """
-    T, base_sig, opps, fix = load(args.pair, args.alpha, args.seat)
+    T, base_sig, opps, fix = load(args.pair, args.alpha, args.seat, alpha2=args.alpha2)
     s = args.seat
     prof = [None] * 3
     for o in opps:
@@ -363,8 +381,9 @@ def linear(args):
         print(f"  w={w:.1f}  vs_biased {e['vs_biased']:+.3f}  worst_adv "
               f"{e['worst_adversary']:+.3f}  worst_selfish {e['worst_selfish']:+.3f}", flush=True)
     os.makedirs(OUT, exist_ok=True)
-    json.dump({"pair": args.pair, "alpha": args.alpha, "seat": s, "rows": rows},
-              open(f"{OUT}/linear_{args.pair}_a{args.alpha}_s{s}.json", "w"), indent=1)
+    json.dump({"pair": args.pair, "alpha": args.alpha, "alpha2": args.alpha if args.alpha2 is None else args.alpha2,
+               "seat": s, "rows": rows},
+              open(f"{OUT}/linear_{args.pair}_a{alpha_tag(args)}_s{s}.json", "w"), indent=1)
 
 
 # ---------------------------------------------------------------------------------
@@ -374,7 +393,10 @@ def linear(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--pair", default="FF")               # opponent types, in seat order
-    ap.add_argument("--alpha", type=float, default=0.35)  # how biased the opponents are
+    ap.add_argument("--alpha", type=float, default=0.35)  # how biased the opponents are (first opponent)
+    ap.add_argument("--alpha2", type=float, default=None) # second opponent's bias (default: same as --alpha)
+    ap.add_argument("--out", default="results")           # output folder; use results_het for mixed alphas
+    ap.add_argument("--cache-dir", default="results")     # where the p = 0 cache lives
     ap.add_argument("--seat", type=int, default=0)        # our seat
     ap.add_argument("--p", type=float, default=0.5)       # probability an opponent follows its model
     ap.add_argument("--restrict", choices=["one-sided", "independent"], default="independent")
@@ -384,4 +406,5 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=None, help="random first-iteration strategies")
     ap.add_argument("--linear", action="store_true", help="linear-mixing baseline only")
     a = ap.parse_args()
+    OUT, CACHE_DIR = a.out, a.cache_dir                   # module-level settings used by solve/linear
     linear(a) if a.linear else solve(a)

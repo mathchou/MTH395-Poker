@@ -14,6 +14,11 @@ Groups, in the order they start:
   B  solution stability: 6 settings re-solved at 1200     (12 jobs, 40-100 min each)
      iterations and from a random start
   E  alpha 0.2 restricted responses, seat 0, all pairs    (75 jobs; fills the rest of the night)
+  H  heterogeneous opponents: FR and RF, seat 0, each       (160 jobs; ~6-8 h per pair on 8 workers)
+     opponent's alpha in {0.1, 0.2, 0.35, 0.5} independently;
+     results go to results_het/
+
+Run only some groups with --groups, e.g.  python overnight.py --groups H
 """
 
 import argparse
@@ -27,6 +32,7 @@ PY = sys.executable
 LOGS = os.path.join("overnight", "logs")
 DONE = os.path.join("overnight", "done")
 PAIRS = [a + b for a in "ORCF" for b in "ORCF"]
+HET_ALPHAS = (0.1, 0.2, 0.35, 0.5)
 
 
 def cfr5k():
@@ -66,6 +72,18 @@ def jobs(nshards, cfr1k):
                   f"results/rnr_{tag}_it1200.json"))
         J.append((f"B_{tag}_seed1", common + ["--iters", "600", "--seed", "1", "--suffix", "seed1"],
                   f"results/rnr_{tag}_seed1.json"))
+    # H: heterogeneous opponents (see module docstring); written to results_het/
+    for pair in ("FR", "RF"):
+        for a1 in HET_ALPHAS:
+            for a2 in HET_ALPHAS:
+                tag = f"{a1}" if a1 == a2 else f"{a1}-{a2}"
+                common = ["rnr_general.py", "--pair", pair, "--alpha", str(a1), "--alpha2", str(a2),
+                          "--seat", "0", "--out", "results_het", "--cache-dir", "results"]
+                J.append((f"H_linear_{pair}_a{tag}", common + ["--linear"], f"results_het/linear_{pair}_a{tag}_s0.json"))
+                for p in (0.0, 0.25, 0.5, 0.9):
+                    J.append((f"H_{pair}_a{tag}_p{p}", common + ["--p", str(p), "--restrict", "independent",
+                                                               "--free", "selfish", "--iters", "600"],
+                              f"results_het/rnr_{pair}_a{tag}_s0_independent_selfish_p{p}.json"))
     # E: alpha 0.2 grid, seat 0 (p = 0 reuses the cached solve and takes about a minute)
     for pair in PAIRS:
         J.append((f"E_linear_{pair}_a0.2", ["rnr_general.py", "--pair", pair, "--alpha", "0.2", "--seat", "0", "--linear"],
@@ -89,13 +107,14 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--cfr1k", default=None, help="path to the 1,000-iteration CFR table (optional)")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--groups", default="ABCDEH", help="which job groups to run, e.g. H or ACH")
     a = ap.parse_args()
     if not os.path.exists("leduc3p_tree.npz"):
         subprocess.run([PY, "tree_engine.py", "build"], check=True)
     if a.cfr1k and not os.path.exists(a.cfr1k):
         raise SystemExit(f"--cfr1k file not found: {a.cfr1k}")
     os.makedirs(LOGS, exist_ok=True); os.makedirs(DONE, exist_ok=True)
-    todo = jobs(a.workers, a.cfr1k)
+    todo = [j for j in jobs(a.workers, a.cfr1k) if j[0][0] in a.groups.upper()]
     if a.list:
         for name, argv, out in todo:
             print(f"{'DONE' if is_done(name, out) else 'todo'}  {name}")
