@@ -1,9 +1,0 @@
-CFR baseline: cfr_3p_5000.pkl (5000 iterations, nash_conv 0.0023)
-
-CFR: opponents learning from a random start, seed 1
-  iter  our EV vs eq  seat1 vs eq  seat2 vs eq  gap seat1  gap seat2   secs
-   100        -0.363       +0.122       +0.240     0.0104     0.0109    154
-   200        -0.381       +0.135       +0.246     0.0032     0.0038    295
-   300        -0.388       +0.139       +0.249     0.0016     0.0020    437
-   400        -0.391       +0.140       +0.251     0.0010     0.0012    580
-   500        -0.392       +0.141       +0.251     0.0007     0.0008    725

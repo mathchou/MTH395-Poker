@@ -1,4 +1,16 @@
-/papers/
-/.venv/
+# environment and editor
+.venv/
 .idea/
-rnr_package/leduc3p_tree.npz
+__pycache__/
+*.pyc
+
+# reference papers
+/papers/
+
+# generated files (results/*.json and results_het/*.json stay tracked)
+overnight/
+*.npz
+*.npy
+*.log
+*.png
+*.zip

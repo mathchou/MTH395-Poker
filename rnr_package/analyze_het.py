@@ -12,6 +12,10 @@ and each (alpha, alpha2) cell, reports:
 All payoffs relative to our seat's equilibrium value; worst cases use the exact punisher.
 
     python analyze_het.py                   # tables, plus results_het/het_<pair>_s<seat>.png
+    python analyze_het.py --pairs FR RF     # only some pairs
+
+A cell with alpha = 0 for an opponent is that opponent playing equilibrium, whatever its
+type letter, so it is stored once (as type O) and shared by every pair's grid.
 """
 
 import glob
@@ -37,14 +41,20 @@ def seat_values():
     return {s: ev[s] for s in range(3)}
 
 
+def canon(pair, a1, a2):
+    """(type1, alpha1, type2, alpha2) with any zero-alpha opponent written as O."""
+    return (pair[0] if a1 > 0 else "O", a1 if a1 > 0 else 0.0, pair[1] if a2 > 0 else "O", a2 if a2 > 0 else 0.0)
+
+
 def load():
     lin, rnr = {}, defaultdict(dict)
     for f in glob.glob(f"{HET}/linear_*.json"):
-        r = json.load(open(f)); lin[(r["pair"], r["seat"], r["alpha"], r["alpha2"])] = r["rows"]
+        r = json.load(open(f))
+        lin[(r["seat"],) + canon(r["pair"], r["alpha"], r.get("alpha2", r["alpha"]))] = r["rows"]
     for f in glob.glob(f"{HET}/rnr_*_independent_selfish_p*.json"):
         r = json.load(open(f))
         if "alpha2" in r:
-            rnr[(r["pair"], r["seat"], r["alpha"], r["alpha2"])][r["p"]] = r
+            rnr[(r["seat"],) + canon(r["pair"], r["alpha"], r["alpha2"])][r["p"]] = r
     return lin, rnr
 
 
@@ -66,41 +76,51 @@ def cell(lin_rows, pts, e, opps):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(); ap.add_argument("--pairs", nargs="+", default=None)
+    args = ap.parse_args()
     EQ = seat_values()
     lin, rnr = load()
-    keys = sorted(set(lin) | set(rnr))
+    keys = set(lin) | set(rnr)
     if not keys:
         raise SystemExit(f"no results in {HET}/")
-    for pair, seat in sorted({(k[0], k[1]) for k in keys}):
+    seats = sorted({k[0] for k in keys})
+    wanted = args.pairs or [x + y for x in "RCF" for y in "RCF"]
+    for seat in seats:
         opps = [o for o in range(3) if o != seat]
-        A = sorted({k[2] for k in keys if k[:2] == (pair, seat)})
-        B = sorted({k[3] for k in keys if k[:2] == (pair, seat)})
-        C = {(a, b): cell(lin.get((pair, seat, a, b)), rnr.get((pair, seat, a, b), {}), EQ[seat], opps)
-             for a in A for b in B}
-        name = {0: f"seat {opps[0]} ({pair[0]})", 1: f"seat {opps[1]} ({pair[1]})", "=": "similar"}
-        print(f"\n=== {pair}, we sit in seat {seat}: rows = seat {opps[0]}'s ({pair[0]}) alpha, "
-              f"columns = seat {opps[1]}'s ({pair[1]}) alpha")
-        for title, fn in (("BR gain over equilibrium", lambda c: f"{c['br']:+.3f}"),
-                          ("safe extra profit (best safe RNR minus best equilibrium-level)",
-                           lambda c: f"{c['extra']:+.3f}" if c["extra"] is not None else "   -  "),
-                          ("harder punisher at p = 0.5", lambda c: {0: f"   {pair[0]}  ", 1: f"   {pair[1]}  ", "=": "   =  ",
-                                                                   None: "   ?  "}[c["harder"]])):
-            print(f"\n  {title}")
-            print("  " + " " * 8 + "".join(f"{b:>9}" for b in B))
-            for a in A:
-                print(f"  {a:>8}" + "".join(f"{(fn(C[(a, b)]) if C[(a, b)] else 'n/a'):>9}" for b in B))
-        n = sum(1 for c in C.values() if c); ns = sum(1 for c in C.values() if c and c["n_rnr"] < 3)
-        print(f"\n  cells with results: {n} of {len(C)}" + (f"; {ns} still missing some p values" if ns else ""))
-        try:
-            plot(pair, seat, opps, A, B, C)
-        except Exception as ex:     # plotting is optional
-            print("  (plot skipped:", ex, ")")
+        for pair in wanted:
+            X, Y = pair
+            mine = [k for k in keys if k[0] == seat and k[1] in ("O", X) and k[3] in ("O", Y)]
+            if not any(k[1] == X or k[3] == Y for k in mine):
+                continue
+            A = sorted({k[2] for k in mine}); B = sorted({k[4] for k in mine})
+            key = lambda a, b: (seat,) + canon(pair, a, b)
+            C = {(a, b): cell(lin.get(key(a, b)), rnr.get(key(a, b), {}), EQ[seat], opps) for a in A for b in B}
+            print(f"\n=== {pair}, we sit in seat {seat}: rows = seat {opps[0]}'s ({X}) alpha, "
+                  f"columns = seat {opps[1]}'s ({Y}) alpha  (alpha 0 = equilibrium player)")
+            for title, fn in (("BR gain over equilibrium", lambda c: f"{c['br']:+.3f}"),
+                              ("safe extra profit (best safe RNR minus best equilibrium-level)",
+                               lambda c: f"{c['extra']:+.3f}" if c["extra"] is not None else "   -  "),
+                              ("harder punisher at p = 0.5", lambda c: {0: f"   {X}  ", 1: f"   {Y}  ", "=": "   =  ",
+                                                                       None: "   ?  "}[c["harder"]])):
+                print(f"\n  {title}")
+                print("  " + " " * 6 + "".join(f"{b:>8}" for b in B))
+                for a in A:
+                    print(f"  {a:>6}" + "".join(f"{(fn(C[(a, b)]) if C[(a, b)] else 'n/a'):>8}" for b in B))
+            n = sum(1 for c in C.values() if c)
+            print(f"\n  cells with a baseline and p = 0: {n} of {len(C)}; with p = 0.5: "
+                  f"{sum(1 for c in C.values() if c and c['harder'] is not None)}")
+            try:
+                plot(pair, seat, opps, A, B, C)
+            except Exception as ex:
+                print("  (plot skipped:", ex, ")")
 
 
 def plot(pair, seat, opps, A, B, C):
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fig, axs = plt.subplots(1, 3, figsize=(16, 4.8))
+    big = max(len(A), len(B)) > 6
+    fig, axs = plt.subplots(1, 3, figsize=(22, 7) if big else (16, 4.8))
     panels = (("BR gain over equilibrium", lambda c: c["br"], "viridis"),
               ("safe extra profit\n(blank = no safe exploitation found)", lambda c: c["extra"], "viridis"),
               (f"harder punisher at p = 0.5\n(1 = seat {opps[0]} {pair[0]}, 2 = seat {opps[1]} {pair[1]}, 0 = similar)",
@@ -117,7 +137,7 @@ def plot(pair, seat, opps, A, B, C):
             for j in range(len(B)):
                 if not np.isnan(M[i, j]):
                     ax.text(j, i, f"{M[i, j]:.2f}" if "punisher" not in title else f"{int(M[i, j])}",
-                            ha="center", va="center", fontsize=9, color="white")
+                            ha="center", va="center", fontsize=9 if len(B) <= 6 else 6, color="white")
         ax.set_xticks(range(len(B)), [f"{b:g}" for b in B]); ax.set_yticks(range(len(A)), [f"{a:g}" for a in A])
         ax.set_xlabel(f"seat {opps[1]} ({pair[1]}) alpha"); ax.set_ylabel(f"seat {opps[0]} ({pair[0]}) alpha")
         ax.set_title(title, fontsize=10)
