@@ -43,17 +43,35 @@ CHECKPOINTS = (10, 25, 50, 100, 150, 200, 300)
 
 
 class GridIdentifier:
-    def __init__(self, game, base, grid=None, p_zero=0.25):
+    def __init__(self, game, base, grid=None, p_zero=0.25, seat=0, tremble=0.0, forget=1.0, switch=0.0):
+        """seat: the seat doing the identifying (its own card is known; the other two are
+        modelled). tremble: probability eps that a modelled opponent plays uniformly at
+        random, mixed into every likelihood, so one near-impossible action cannot rule a
+        hypothesis out forever. 0 reproduces the original identifier exactly.
+
+        For opponents whose style changes, two ways to let old evidence fade (use one):
+          forget  exponential forgetting: each hand, accumulated log-evidence is multiplied by
+                  forget (< 1) before the new hand's is added; memory ~ 1 / (1 - forget) hands
+          switch  fixed-share (Herbster & Warmuth 1998): each hand, each opponent independently
+                  re-draws its type from the prior with probability switch; exact Bayes for that
+                  model of change, and no hypothesis falls below ~ switch * prior
+        Defaults (1.0, 0.0) reproduce the stationary identifier exactly."""
+        if forget < 1.0 and switch > 0.0:
+            raise ValueError("use forget or switch, not both")
         self.game, self.base = game, base
+        self.seat, self.tremble, self.forget, self.switch = seat, tremble, forget, switch
+        self.opps = [o for o in range(3) if o != seat]
         self.grid = np.round(np.arange(0.05, 0.6001, 0.05), 4) if grid is None else np.asarray(grid, float)
         # Hypotheses for ONE opponent: index 0 = equilibrium, then (type, alpha) by type.
         self.hyp = [("O", 0.0)] + [(t, float(a)) for t in TYPES for a in self.grid]
         self.H = len(self.hyp)
         self.alphas = np.array([a for _, a in self.hyp])
         self.favs = np.array([-1] + [FAV[t] for t in TYPES for _ in self.grid])   # -1: no tilt
-        lp = np.log(np.array([p_zero] + [(1 - p_zero) / (self.H - 1)] * (self.H - 1)))
+        self.pi = np.array([p_zero] + [(1 - p_zero) / (self.H - 1)] * (self.H - 1))   # one opponent's prior
+        lp = np.log(self.pi)
         self.logprior = (lp[:, None] + lp[None, :]).ravel()                     # independent opponents
-        self.loglik = {r: np.zeros(self.H * self.H) for r in REGIMES}
+        self.loglik = {r: np.zeros(self.H * self.H) for r in REGIMES}           # stationary / forgetting
+        self.logpost = {r: self.logprior.copy() for r in REGIMES}               # fixed-share state
         self.deck = [a for a, _ in game.new_initial_state().chance_outcomes()]
 
     def seat_factor(self, decisions):
@@ -64,48 +82,82 @@ class GridIdentifier:
             fav_legal = np.isin(self.favs, list(d))  # tilt applies only where favoured action is legal
             num = (1 - self.alphas) * s + self.alphas * (self.favs == a)
             den = (1 - self.alphas) * tot + self.alphas
-            L *= np.where(fav_legal, num / den, s)
+            f = np.where(fav_legal, num / den, s)
+            if self.tremble:
+                f = (1 - self.tremble) * f + self.tremble / len(d)
+            L *= f
         return L
 
     def update(self, history, true_cards, showdown_seats):
+        self.absorb(self.evidence(history), true_cards, showdown_seats)
+
+    def evidence(self, history):
+        """Each possible deal to the two opponents, with each opponent's likelihood under every
+        hypothesis. Identifiers with the same grid and tremble can share this (absorb)."""
         g = self.game
-        c0, board, st = history[0], None, g.new_initial_state()
+        o1, o2 = self.opps
+        c0, board, st = history[self.seat], None, g.new_initial_state()     # our own card
         for i, a in enumerate(history):              # find the board card, if dealt
             if i >= 3 and st.is_chance_node():
                 board = a
             st.apply_action(a)
         free = [c for c in self.deck if c != c0 and c != board]
         combos = []
-        for c1, c2 in itertools.permutations(free, 2):   # every possible deal to seats 1 and 2
-            h = list(history); h[1], h[2] = c1, c2
-            st = g.new_initial_state(); dec = {1: [], 2: []}
+        for c1, c2 in itertools.permutations(free, 2):   # every possible deal to the two opponents
+            h = list(history); h[o1], h[o2] = c1, c2     # history[p] is seat p's private card
+            st = g.new_initial_state(); dec = {o1: [], o2: []}
             for a in h:
                 if not st.is_chance_node():
                     p = st.current_player()
-                    if p in (1, 2):
+                    if p in dec:
                         dec[p].append((self.base[st.information_state_string(p)], a))
                 st.apply_action(a)
-            combos.append((c1, c2, self.seat_factor(dec[1]), self.seat_factor(dec[2])))
+            combos.append((c1, c2, self.seat_factor(dec[o1]), self.seat_factor(dec[o2])))
+        return combos
+
+    def absorb(self, combos, true_cards, showdown_seats):
+        o1, o2 = self.opps
         for r in REGIMES:
             like = np.zeros(self.H * self.H)
             for c1, c2, L1, L2 in combos:
-                if r == "critic" and (c1, c2) != (true_cards[1], true_cards[2]):
+                if r == "critic" and (c1, c2) != (true_cards[o1], true_cards[o2]):
                     continue
-                if r == "showdown" and ((1 in showdown_seats and c1 != true_cards[1]) or
-                                        (2 in showdown_seats and c2 != true_cards[2])):
+                if r == "showdown" and ((o1 in showdown_seats and c1 != true_cards[o1]) or
+                                        (o2 in showdown_seats and c2 != true_cards[o2])):
                     continue
                 like += np.outer(L1, L2).ravel()     # joint over the deal: sum of products
             with np.errstate(divide="ignore"):
-                self.loglik[r] += np.log(like)
+                ll = np.log(like)
+            if self.switch > 0:
+                P = self.share(self._norm(self.logpost[r]))
+                with np.errstate(divide="ignore"):
+                    self.logpost[r] = np.log(P.ravel()) + ll
+            elif self.forget < 1.0:
+                self.loglik[r] = self.forget * self.loglik[r] + ll
+            else:
+                self.loglik[r] += ll
+
+    @staticmethod
+    def _norm(lp):
+        return np.exp(lp - np.logaddexp.reduce(lp))
+
+    def share(self, P):
+        """Fixed-share step: each opponent independently re-draws from its prior w.p. switch.
+        P is the joint posterior (flat or H x H); returns the H x H mixed posterior."""
+        h, pi = self.switch, self.pi
+        P = P.reshape(self.H, self.H)
+        m1, m2 = P.sum(1), P.sum(0)                  # each opponent's marginal
+        return ((1 - h) ** 2 * P + h * (1 - h) * (np.outer(m1, pi) + np.outer(pi, m2))
+                + h * h * np.outer(pi, pi))
 
     def posterior(self, r="actions"):
-        lp = self.logprior + self.loglik[r]
+        lp = self.logpost[r] if self.switch > 0 else self.logprior + self.loglik[r]
         return np.exp(lp - np.logaddexp.reduce(lp)).reshape(self.H, self.H)
 
     def summary(self, r="actions"):
         P = self.posterior(r)
         out = {}
-        for k, M in ((1, P.sum(1)), (2, P.sum(0))):           # marginal for each opponent
+        for k, M in ((self.opps[0], P.sum(1)), (self.opps[1], P.sum(0))):   # marginal per opponent seat
             types = {"O": M[0], **{t: M[1 + i * len(self.grid): 1 + (i + 1) * len(self.grid)].sum()
                                    for i, t in enumerate(TYPES)}}
             order = np.argsort(self.alphas); cdf = np.cumsum(M[order])
