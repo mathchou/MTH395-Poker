@@ -54,7 +54,12 @@ def setup():
 
 
 def strategy(T, base, b, name):
-    """Our seat-0 strategy by name: CFR, 'RNR p=<p>', or BR(FF)."""
+    """Our seat-0 strategy by name: CFR, 'RNR p=<p>', BR(FF), or a path to any seat-0 strategy
+    file (e.g. a grid cell's solve in results_het/)."""
+    if name.endswith(".npy"):
+        if not os.path.exists(name):
+            raise SystemExit(f"missing {name}")
+        return np.load(name)
     if name == "CFR":
         return b[0]
     if name.startswith("RNR p="):

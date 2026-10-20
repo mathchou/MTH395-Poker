@@ -13,6 +13,8 @@ Seat 0 identifies the two opponents (grid identifier, showdown cards, 1% tremble
 
     step T   p = 0 until c > T, then p*                                   (T = 0.5, 0.9)
     ramp B   p = p* * c**B, snapped DOWN to the largest solved p for that cell  (B = 1, 3)
+    brT      once c > T, an UNRESTRICTED best response to the most likely cell's model (any
+             cell, in the bank or not); shows what the restriction costs and what it buys
     p0       p = 0 throughout                         (reference; exact, no simulation)
     oracle   the true opponents' cell at its p*, from hand 1 (reference; exact)
 
@@ -50,7 +52,7 @@ SCENARIOS = {                       # name: (seat 1 spec, seat 2 spec)
     "FR_offGrid": ("F:0.3", "R:0.3"),
     "switch_F_to_R": ("F:0.35>R:0.3@200", "O"),
 }
-POLICIES = ["step0.5", "step0.9", "ramp1", "ramp3"]
+POLICIES = ["step0.5", "step0.9", "ramp1", "ramp3", "br0.5"]
 
 
 # ---------------------------------------------------------------- styles and cells
@@ -151,6 +153,10 @@ def strategy_flat(key):
     """'cfr', 'p0', or 't1a1-t2a2|p' -> flat seat-0 strategy."""
     if key == "cfr":
         return G["S"].base[SEAT]
+    if key.startswith("br|"):
+        t1, a1, t2, a2 = cell_from_str(key[3:])
+        T, S = G["T"], G["S"]
+        return T.respond([None, S.tilt(1, t1, a1), S.tilt(2, t2, a2)], SEAT, T.util[:, SEAT], T.util[:, SEAT])[0]
     if key == "p0":
         any_cell = next(c for c in G["bank"].values() if 0.0 in c["paths"])
         return np.load(any_cell["paths"][0.0])            # the shared, cached p = 0 solve
@@ -196,6 +202,10 @@ def choose(gi, policy, bank):
     mass = A.T @ P @ A
     i, j = np.unravel_index(np.argmax(mass), mass.shape)
     cell = labels[i] + labels[j]
+    if policy.startswith("br"):
+        if c > float(policy[2:]):
+            return f"br|{cell_str(cell)}", 1.0, cell, c
+        return "p0", 0.0, cell, c
     if cell not in bank:
         return "p0", 0.0, cell, c
     pstar, ps = bank[cell]["pstar"], bank[cell]["ps"]
