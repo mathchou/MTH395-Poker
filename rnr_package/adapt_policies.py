@@ -13,10 +13,21 @@ Seat 0 identifies the two opponents (grid identifier, showdown cards, 1% tremble
 
     step T   p = 0 until c > T, then p*                                   (T = 0.5, 0.9)
     ramp B   p = p* * c**B, snapped DOWN to the largest solved p for that cell  (B = 1, 3)
+    halfT    once c > T, p = p*/2 snapped down to a solved p (often 0 when p* is small)
+    notchT   once c > T, one solved point below p*: the largest solved p < p* ("back off" a notch)
+    nbhdT    once c > T, the largest solved p whose strategy is safe against EVERY cell within 0.2
+             of the model in each opponent's alpha (same types) -- safe under small model error
+    sel      SELECTION from the whole bank: take the smallest set of bank cells holding 90% of the
+             posterior; among every bank strategy (any cell, any solved p) keep those safe against EVERY
+             cell in that set; play the one with the highest posterior-weighted profit across it
+             (p = 0 if none). selb: the same, with a 0.03 safety buffer (re-solves moved margins up to
+             ~0.065). Needs the bank matrix: cross_eval.py --all-p.
     brT      once c > T, an UNRESTRICTED best response to the most likely cell's model (any
              cell, in the bank or not); shows what the restriction costs and what it buys
-    p0       p = 0 throughout                         (reference; exact, no simulation)
-    oracle   the true opponents' cell at its p*, from hand 1 (reference; exact)
+    p0       p = 0 throughout                                           (reference; exact)
+    cell     the true opponents' nearest cell at its p*, from hand 1    (reference; exact)
+    best     hindsight: the bank strategy (any cell, any solved p) earning most against the TRUE
+             opponents while staying safe against them; shortfall is measured against this
 
 If the most likely cell is not in the bank, the policy plays p = 0.
 
@@ -51,8 +62,9 @@ SCENARIOS = {                       # name: (seat 1 spec, seat 2 spec)
     "CR_onGrid": ("C:0.2", "R:0.6"),
     "FR_offGrid": ("F:0.3", "R:0.3"),
     "switch_F_to_R": ("F:0.35>R:0.3@200", "O"),
+    "switch_FR_to_RR": ("F:0.4>R:0.4@150", "R:0.2"),     # two deviators throughout: speed matters
 }
-POLICIES = ["step0.5", "step0.9", "ramp1", "ramp3", "br0.5"]
+POLICIES = ["step0.5", "step0.9", "ramp1", "notch0.5", "nbhd0.5", "sel", "selb", "br0.5"]
 
 
 # ---------------------------------------------------------------- styles and cells
@@ -86,12 +98,13 @@ def truth_key(seat1, seat2):
 
 # ---------------------------------------------------------------- the bank
 
-def load_bank(pess=False):
-    """{(t1, a1, t2, a2): {"pstar": p*, "ps": sorted solved ps, "paths": {p: strategy}}}, seat 0, grid only."""
-    pat = re.compile(r"rnr_([ORCF]{2})_a([0-9.]+)(?:-([0-9.]+))?_s0_independent_selfish_p([0-9.]+)\.json$")
-    eq = json.load(open(os.path.join(HET, "linear_OO_a0.0_s0.json")))["rows"][0]["vs_biased"]
+def load_bank(pess=False, seat=None):
+    """{(t1, a1, t2, a2): {"pstar": p*, "ps": sorted solved ps, "paths": {p: strategy}}}, one seat (default seat 0), grid only."""
+    seat = SEAT if seat is None else seat
+    pat = re.compile(r"rnr_([ORCF]{2})_a([0-9.]+)(?:-([0-9.]+))?_s" + str(seat) + r"_independent_selfish_p([0-9.]+)\.json$")
+    eq = json.load(open(os.path.join(HET, f"linear_OO_a0.0_s{seat}.json")))["rows"][0]["vs_biased"]
     cells = {}
-    for f in glob.glob(os.path.join(HET, "rnr_*_s0_independent_selfish_p*.json")):
+    for f in glob.glob(os.path.join(HET, f"rnr_*_s{seat}_independent_selfish_p*.json")):
         m = pat.search(os.path.basename(f))
         if not m:
             continue
@@ -110,11 +123,11 @@ def load_bank(pess=False):
     for key, c in cells.items():
         if 0.0 not in c["files"] or len(c["files"]) < 2:
             continue
-        lin = os.path.join(HET, f"linear_{c['pair']}_a{c['tag']}_s0.json")
+        lin = os.path.join(HET, f"linear_{c['pair']}_a{c['tag']}_s{seat}.json")
         if not os.path.exists(lin):
             continue
         if pess:
-            pf = os.path.join("results_het_pess", f"pess_{c['pair']}_a{c['tag']}_s0.json")
+            pf = os.path.join("results_het_pess", f"pess_{c['pair']}_a{c['tag']}_s{seat}.json")
             if not os.path.exists(pf):
                 continue
             P = json.load(open(pf))
@@ -135,9 +148,10 @@ def load_bank(pess=False):
 G = {}
 
 
-def init_sim(pess=False):
-    """Per-process setup. pess is passed explicitly: on Windows, workers do not inherit globals."""
-    G["pess"] = pess
+def init_sim(pess=False, nbhd=None, matrix=None):
+    """Per-process setup. pess, the neighbourhood table and the bank matrix are passed explicitly:
+    on Windows, workers do not inherit globals."""
+    G["pess"], G["nbhd"], G["matrix"] = pess, (nbhd or {}), (matrix or {})
     import pyspiel
     from cfr_path import find_cfr
     from tree_engine import Tree
@@ -202,6 +216,8 @@ def choose(gi, policy, bank):
     mass = A.T @ P @ A
     i, j = np.unravel_index(np.argmax(mass), mass.shape)
     cell = labels[i] + labels[j]
+    if policy.startswith("sel"):
+        return select(policy, labels, mass, cell, c)
     if policy.startswith("br"):
         if c > float(policy[2:]):
             return f"br|{cell_str(cell)}", 1.0, cell, c
@@ -209,6 +225,16 @@ def choose(gi, policy, bank):
     if cell not in bank:
         return "p0", 0.0, cell, c
     pstar, ps = bank[cell]["pstar"], bank[cell]["ps"]
+    if policy.startswith(("half", "nbhd", "notch")):
+        if c <= float(policy.lstrip("abcdefghijklmnopqrstuvwxyz")):
+            return "p0", 0.0, cell, c
+        if policy.startswith("half"):
+            p = max([q for q in bank[cell]["paths"] if q <= pstar / 2 + 1e-12], default=0.0)
+        elif policy.startswith("notch"):
+            p = max([q for q in bank[cell]["paths"] if q < pstar - 1e-12], default=0.0)
+        else:
+            p = G["nbhd"].get(cell_str(cell), 0.0)
+        return ("p0", 0.0, cell, c) if p == 0.0 else (f"{cell_str(cell)}|{p:g}", p, cell, c)
     if policy.startswith("step"):
         p = pstar if c > float(policy[4:]) else 0.0
     else:
@@ -219,13 +245,54 @@ def choose(gi, policy, bank):
     return f"{cell_str(cell)}|{p:g}", p, cell, c
 
 
+def select(policy, labels, mass, cell, c, level=0.9):
+    """Bank selection: safe against every cell in the posterior's 90% set, best weighted profit."""
+    buffer = 0.03 if policy.endswith("b") else 0.0
+    Mx = G["matrix"]
+    ranked = sorted(((mass[i, j], labels[i] + labels[j]) for i in range(len(labels)) for j in range(len(labels))),
+                    key=lambda t: -t[0])
+    plausible, tot = [], 0.0
+    for m, cl in ranked:
+        plausible.append((m, cell_str(cl))); tot += m
+        if tot >= level:
+            break
+    if any(t not in Mx for _, t in plausible):          # a plausible table nobody has scored: stay at p = 0
+        return "p0", 0.0, cell, c
+    keys = set.intersection(*(set(Mx[t]) for _, t in plausible))
+    best = None
+    for k in keys:
+        if all(Mx[t][k][1] >= -TOL + buffer for _, t in plausible):
+            v = sum(m * Mx[t][k][0] for m, t in plausible)
+            if best is None or v > best[0]:
+                best = (v, k)
+    if best is None or best[1] in ("p0", "cfr") or best[0] <= 0:
+        return "p0", 0.0, cell, c
+    return best[1], float(best[1].split("|")[1]), cell, c
+
+
+def build_matrix(cache):
+    """{truth: {strategy: (EV minus baseline's, worst case minus baseline's)}}, baseline = the better of
+    CFR and p = 0 against that truth; from the evaluation cache."""
+    by_t = {}
+    for k, v in cache.items():
+        st, t = k.split("||")
+        by_t.setdefault(t, {})[st] = (v["ev"], v["worst"])
+    out = {}
+    for t, D in by_t.items():
+        if "cfr" in D and "p0" in D:
+            gb, wb = max(D["cfr"][0], D["p0"][0]), max(D["cfr"][1], D["p0"][1])
+            out[t] = {st: (g - gb, w - wb) for st, (g, w) in D.items() if st != "cfr" and not st.startswith("br|")}
+    return out
+
+
 def simulate(job):
-    scen, seed, policy, hands, every = job
+    scen, seed, policy, hands, every, *rest = job
+    forget, switch = rest if rest else (1.0, 0.0)
     from q2_grid_identify import GridIdentifier
     from q2_identify import play_hand
     s1, s2 = SCENARIOS[scen]
     rng = np.random.default_rng([seed, list(SCENARIOS).index(scen)])   # same stream start for every policy
-    gi = GridIdentifier(G["game"], G["base"], seat=SEAT, tremble=0.01)
+    gi = GridIdentifier(G["game"], G["base"], seat=SEAT, tremble=0.01, forget=forget, switch=switch)
     key = "p0"
     log = [dict(hand=0, key=key, p=0.0, cell=None, c=0.0)]
     for n in range(1, hands + 1):
@@ -267,7 +334,7 @@ def segments(scen, log, hands):
     return out
 
 
-def oracle_key(scen, hand):
+def cell_oracle_key(scen, hand):
     s1, s2 = SCENARIOS[scen]
     cell = nearest_cell_label(*style_at(s1, hand)) + nearest_cell_label(*style_at(s2, hand))
     b = G["bank"].get(cell)
@@ -276,11 +343,82 @@ def oracle_key(scen, hand):
     return f"{cell_str(cell)}|{b['pstar']:g}"
 
 
-def reference_log(scen, which, hands, every):
-    marks = sorted({0} | {s for s, _, _ in phases(SCENARIOS[scen][0]) + phases(SCENARIOS[scen][1])})
+def marks_of(scen):
+    return sorted({0} | {s for s, _, _ in phases(SCENARIOS[scen][0]) + phases(SCENARIOS[scen][1])})
+
+
+def truths_of(scen):
+    s1, s2 = SCENARIOS[scen]
+    return sorted({truth_key(style_at(s1, m + 1), style_at(s2, m + 1)) for m in marks_of(scen)})
+
+
+def candidates():
+    """Every playable bank strategy: p = 0, CFR, and each cell at each solved p > 0."""
+    out = ["p0", "cfr"]
+    for c, b in G["bank"].items():
+        out += [f"{cell_str(c)}|{p:g}" for p in sorted(b["paths"]) if p > 0]
+    return out
+
+
+def neighbours(cell):
+    t1, a1, t2, a2 = cell
+    return [d for d in G["bank"] if (d[0], d[2]) == (t1, t2)
+            and abs(d[1] - a1) <= 0.2 + 1e-9 and abs(d[3] - a2) <= 0.2 + 1e-9]
+
+
+def base_worst(cache, t):
+    return max(cache[f"cfr||{t}"]["worst"], cache[f"p0||{t}"]["worst"])
+
+
+def best_key(cache, t):
+    """Hindsight: the candidate with the highest EV against truth t among those safe against it."""
+    if f"cfr||{t}" not in cache or f"p0||{t}" not in cache:
+        return "p0"                                  # not evaluated yet (report-only on a fresh cache)
+    bw = base_worst(cache, t)
+    ok = [(cache[f"{k}||{t}"]["ev"], k) for k in candidates()
+          if f"{k}||{t}" in cache and cache[f"{k}||{t}"]["worst"] >= bw - TOL]
+    return max(ok)[1] if ok else "p0"
+
+
+def reference_log(scen, which, hands, every, cache=None):
     if which == "p0":
         return [dict(hand=0, key="p0")]
-    return [dict(hand=m, key=oracle_key(scen, m + 1)) for m in marks]
+    if which == "cell":
+        return [dict(hand=m, key=cell_oracle_key(scen, m + 1)) for m in marks_of(scen)]
+    s1, s2 = SCENARIOS[scen]
+    return [dict(hand=m, key=best_key(cache, truth_key(style_at(s1, m + 1), style_at(s2, m + 1))))
+            for m in marks_of(scen)]
+
+
+def run_evals(pairs, cache, cache_f, workers, pess, label):
+    todo = [pr for pr in pairs if f"{pr[0]}||{pr[1]}" not in cache]
+    if not todo:
+        return
+    print(f"evaluating {len(todo)} (strategy, opponents) pairs for {label} on {workers} workers", flush=True)
+    t0 = time.time()
+    with Pool(workers, initializer=init_sim, initargs=(pess,)) as pool:
+        for i, (pr, v) in enumerate(pool.imap_unordered(evaluate, todo), 1):
+            cache[f"{pr[0]}||{pr[1]}"] = v
+            if i % 200 == 0 or i == len(todo):
+                json.dump(cache, open(cache_f, "w"))
+                print(f"[{(time.time() - t0) / 60:6.1f} min] {i}/{len(todo)}", flush=True)
+
+
+def neighbourhood_table(cache, cache_f, workers, pess):
+    """{cell: largest solved p safe against every neighbouring cell's true opponents}."""
+    pairs = set()
+    for c, b in G["bank"].items():
+        for d in neighbours(c):
+            dt = cell_str(d)
+            pairs |= {("cfr", dt), ("p0", dt)} | {(f"{cell_str(c)}|{p:g}", dt) for p in b["paths"] if p > 0}
+    run_evals(pairs, cache, cache_f, workers, pess, "the neighbourhood table")
+    table = {}
+    for c, b in G["bank"].items():
+        safe = [p for p in sorted(b["paths"]) if p > 0 and all(
+            cache[f"{cell_str(c)}|{p:g}||{cell_str(d)}"]["worst"] >= base_worst(cache, cell_str(d)) - TOL
+            for d in neighbours(c))]
+        table[cell_str(c)] = max(safe, default=0.0)
+    return table
 
 
 # ---------------------------------------------------------------- driver
@@ -292,56 +430,71 @@ def main():
     ap.add_argument("--seeds", type=int, default=20); ap.add_argument("--hands", type=int, default=300)
     ap.add_argument("--every", type=int, default=25); ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--pess", action="store_true", help="p* from results_het_pess (pessimistic punisher)")
+    ap.add_argument("--forget", type=float, default=1.0, help="identifier forgetting per hand (1 = none)")
+    ap.add_argument("--switch", type=float, default=0.0, help="identifier fixed-share rate (0 = none)")
     ap.add_argument("--time-one", action="store_true"); ap.add_argument("--report", action="store_true")
     a = ap.parse_args()
     global OUT
     OUT = "adapt_pess" if a.pess else "adapt"       # p* differs, so simulations must not be shared
-    G["pess"] = a.pess
+    if a.forget < 1.0:
+        OUT += f"_forget{a.forget:g}"
+    if a.switch > 0.0:
+        OUT += f"_switch{a.switch:g}"
     os.makedirs(OUT, exist_ok=True)
     sim_file = lambda j: os.path.join(OUT, f"sim_{j[0]}_s{j[1]}_{j[2]}.json")
-    jobs = [(sc, sd, po, a.hands, a.every) for sc in a.scenarios for sd in range(a.seeds) for po in a.policies]
+    jobs = [(sc, sd, po, a.hands, a.every, a.forget, a.switch) for sc in a.scenarios for sd in range(a.seeds)
+            for po in a.policies]
+    init_sim(a.pess)
+    # Evaluations (exact EV, pessimistic worst case of a given strategy against given opponents) do
+    # not depend on how p* was chosen, so one cache serves both runs; it starts from cross_eval.py's.
+    cache_f = "adapt_evals.json"
+    cache = json.load(open(cache_f)) if os.path.exists(cache_f) else {}
+    xf = os.path.join("cross_eval", "evals_s0.json")
+    if os.path.exists(xf):
+        cache = {**json.load(open(xf)), **cache}
+    nbhd_f = "adapt_nbhd.json"                      # also independent of p*
+    nbhd = {}
+    if any(p.startswith("nbhd") for p in a.policies):
+        if os.path.exists(nbhd_f):
+            nbhd = json.load(open(nbhd_f))
+        elif not a.report:
+            nbhd = neighbourhood_table(cache, cache_f, a.workers, a.pess)
+            json.dump(nbhd, open(nbhd_f, "w"), indent=1)
+            print(f"neighbourhood-safe p for {len(nbhd)} cells; {sum(v > 0 for v in nbhd.values())} above 0", flush=True)
+    G["nbhd"] = nbhd
+    matrix = build_matrix(cache) if any(p.startswith("sel") for p in a.policies) else {}
+    G["matrix"] = matrix
+    if matrix:
+        print(f"bank matrix: {len(matrix)} opponent cells scored, ~{int(np.median([len(v) for v in matrix.values()]))} "
+              f"strategies each", flush=True)
     if a.time_one:
-        init_sim(a.pess); t0 = time.time()
+        t0 = time.time()
         r = simulate((a.scenarios[0], 0, a.policies[0], a.hands, a.every))
         t1 = time.time()
         pairs = {(k, t) for _, _, k, t in segments(r["scenario"], r["log"], a.hands)}
         for pr in pairs:
             evaluate(pr)
         t2 = time.time()
-        n_pairs = len(pairs)
-        print(f"one session ({a.hands} hands): {t1 - t0:.0f}s; its {n_pairs} distinct evaluations: {t2 - t1:.0f}s "
-              f"({(t2 - t1) / max(n_pairs, 1):.0f}s each)")
-        print(f"full run: {len(jobs)} sessions -> ~{len(jobs) * (t1 - t0) / a.workers / 60:.0f} min on {a.workers} workers, "
-              f"plus evaluations (cached; typically a few hundred pairs in all)")
+        print(f"one session ({a.hands} hands): {t1 - t0:.0f}s; its {len(pairs)} distinct evaluations: {t2 - t1:.0f}s")
         return
     if not a.report:
         todo = [j for j in jobs if not os.path.exists(sim_file(j))]
         print(f"simulating {len(todo)} of {len(jobs)} sessions on {a.workers} workers", flush=True)
         t0 = time.time()
-        with Pool(a.workers, initializer=init_sim, initargs=(a.pess,)) as pool:
+        with Pool(a.workers, initializer=init_sim, initargs=(a.pess, nbhd, matrix)) as pool:
             for i, r in enumerate(pool.imap_unordered(simulate, todo), 1):
                 json.dump(r, open(sim_file((r["scenario"], r["seed"], r["policy"])), "w"))
-                if i % 20 == 0:
+                if i % 40 == 0:
                     print(f"[{(time.time() - t0) / 60:6.1f} min] {i}/{len(todo)} sessions", flush=True)
-    # evaluations needed: every (strategy, truth) pair in any session, the references, and baselines
-    init_sim(a.pess)
     sims = [json.load(open(sim_file(j))) for j in jobs if os.path.exists(sim_file(j))]
     need = set()
     for r in sims:
         need |= {(k, t) for _, _, k, t in segments(r["scenario"], r["log"], r["hands"])}
     for sc in a.scenarios:
-        for which in ("p0", "oracle"):
-            need |= {(k, t) for _, _, k, t in segments(sc, reference_log(sc, which, a.hands, a.every), a.hands)}
-        need |= {("cfr", t) for _, _, _, t in segments(sc, reference_log(sc, "p0", a.hands, a.every), a.hands)}
-    cache_f = os.path.join(OUT, "evals.json")
-    cache = json.load(open(cache_f)) if os.path.exists(cache_f) else {}
-    todo = [pr for pr in need if f"{pr[0]}||{pr[1]}" not in cache]
-    if todo and not a.report:
-        print(f"evaluating {len(todo)} (strategy, opponents) pairs on {a.workers} workers", flush=True)
-        with Pool(a.workers, initializer=init_sim, initargs=(a.pess,)) as pool:
-            for pr, v in pool.imap_unordered(evaluate, todo):
-                cache[f"{pr[0]}||{pr[1]}"] = v
-                json.dump(cache, open(cache_f, "w"))
+        for t in truths_of(sc):
+            need |= {(k, t) for k in candidates()}           # baselines, cell oracle and hindsight oracle
+    if not a.report:
+        run_evals(need, cache, cache_f, a.workers, a.pess, "sessions and oracles")
     report(a, sims, cache)
 
 
@@ -349,38 +502,40 @@ def report(a, sims, cache):
     E = lambda k, t: cache.get(f"{k}||{t}")
     def score(scen, log, hands):
         segs = segments(scen, log, hands)
-        if any(E(k, t) is None for _, _, k, t in segs):
+        if any(E(k, t) is None for _, _, k, t in segs) or any(E(b, t) is None for b in ("cfr", "p0") for _, _, _, t in segs):
             return None
         ev = sum((hi - lo) * E(k, t)["ev"] for lo, hi, k, t in segs) / hands
-        base_w = {t: max(E("cfr", t)["worst"], E("p0", t)["worst"]) for _, _, _, t in segs}
-        exposed = sum((hi - lo) for lo, hi, k, t in segs if E(k, t)["worst"] < base_w[t] - TOL) / hands
-        worst = min(E(k, t)["worst"] - base_w[t] for _, _, k, t in segs)
-        return dict(ev=ev, exposed=exposed, worst=worst, segs=segs)
-    print(f"\n{'scenario':<15}{'policy':<9}{'n':>4}{'avg EV':>9}{'shortfall':>11}{'exposed':>9}"
+        bw = {t: base_worst(cache, t) for _, _, _, t in segs}
+        exposed = sum((hi - lo) for lo, hi, k, t in segs if E(k, t)["worst"] < bw[t] - TOL) / hands
+        worst = min(E(k, t)["worst"] - bw[t] for _, _, k, t in segs)
+        return dict(ev=ev, exposed=exposed, worst=worst)
+    print(f"\n{'scenario':<17}{'policy':<12}{'n':>4}{'avg EV':>9}{'shortfall':>11}{'exposed':>9}"
           f"{'worst vs base':>15}{'commit':>8}")
     for sc in a.scenarios:
-        ref = {w: score(sc, reference_log(sc, w, a.hands, a.every), a.hands) for w in ("p0", "oracle")}
-        if ref["oracle"] is None:
+        ref = {w: score(sc, reference_log(sc, w, a.hands, a.every, cache), a.hands) for w in ("p0", "cell", "best")}
+        if ref["best"] is None:
             continue
-        orc = ref["oracle"]["ev"] * a.hands
-        for w in ("p0", "oracle"):
+        top = ref["best"]["ev"] * a.hands
+        for w in ("p0", "cell", "best"):
             r = ref[w]
-            print(f"{sc:<15}{w:<9}{'-':>4}{r['ev']:>+9.3f}{orc - r['ev'] * a.hands:>+11.1f}"
-                  f"{r['exposed']:>9.0%}{r['worst']:>+15.3f}{'-':>8}")
+            if r:
+                print(f"{sc:<17}{w + ' (ref)':<12}{'-':>4}{r['ev']:>+9.3f}{top - r['ev'] * a.hands:>+11.1f}"
+                      f"{r['exposed']:>9.0%}{r['worst']:>+15.3f}{'-':>8}")
         for po in a.policies:
             S = [s for s in sims if s["scenario"] == sc and s["policy"] == po]
             R = [x for x in (score(sc, s["log"], s["hands"]) for s in S) if x]
             if not R:
                 continue
             commit = [next((e["hand"] for e in s["log"] if e["p"] > 0), a.hands) for s in S]
-            print(f"{sc:<15}{po:<9}{len(R):>4}{np.median([r['ev'] for r in R]):>+9.3f}"
-                  f"{np.median([orc - r['ev'] * a.hands for r in R]):>+11.1f}"
+            print(f"{sc:<17}{po:<12}{len(R):>4}{np.median([r['ev'] for r in R]):>+9.3f}"
+                  f"{np.median([top - r['ev'] * a.hands for r in R]):>+11.1f}"
                   f"{np.median([r['exposed'] for r in R]):>9.0%}{np.median([r['worst'] for r in R]):>+15.3f}"
                   f"{np.median(commit):>8.0f}")
-    print("\navg EV: per hand vs equilibrium, exact. shortfall: chips behind the oracle over the session "
-          "(median). exposed: share of hands whose strategy's pessimistic worst case is more than 0.05 below "
-          "the best equilibrium-level strategy's. worst vs base: the session's lowest such margin. "
-          "commit: first hand with p > 0.")
+    print("\navg EV: per hand vs equilibrium, exact. shortfall: chips behind the hindsight-best safe bank "
+          "strategy over the session (median). exposed: share of hands whose strategy's pessimistic worst "
+          "case is more than 0.05 below the best equilibrium-level strategy's. worst vs base: the session's "
+          "lowest such margin. commit: first hand with p > 0. References: p0 = never adapt; cell = the true "
+          "opponents' nearest cell at its p*; best = hindsight.")
 
 
 if __name__ == "__main__":

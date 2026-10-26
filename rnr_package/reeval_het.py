@@ -42,6 +42,18 @@ def cells():
     return {k: v for k, v in out.items() if any(p > 0 for p in v)}
 
 
+def up_to_date(out, strategies):
+    """Scored, and with exactly the solves the cell has now? A cell that has gained solves since it
+    was scored (e.g. by a later adaptive stage) is re-evaluated."""
+    if not os.path.exists(out):
+        return False
+    try:
+        scored = {float(p) for p in json.load(open(out))["rnr"]}
+    except (ValueError, KeyError):
+        return False
+    return scored == set(strategies)
+
+
 def alphas(tag):
     a = tag.split("-")
     return (float(a[0]), float(a[-1]))
@@ -62,7 +74,7 @@ def evaluate_cell(item):
     from reeval_pessimistic import respond_pess
     (pair, tag, s), strategies = item
     out = os.path.join(OUT, f"pess_{pair}_a{tag}_s{s}.json")
-    if os.path.exists(out):
+    if up_to_date(out, strategies):
         return f"{pair} a{tag} s{s}: already done"
     t0 = time.time()
     T, base, U, e = G["T"], G["base"], G["T"].util, G["EQ"][s]
@@ -154,8 +166,9 @@ def main():
     if a.report:
         return report(a.grid)
     C = sorted(cells().items())
-    todo = [c for c in C if not os.path.exists(os.path.join(OUT, f"pess_{c[0][0]}_a{c[0][1]}_s{c[0][2]}.json"))]
-    print(f"{len(C)} cells with solves; {len(todo)} to evaluate on {a.workers} workers", flush=True)
+    todo = [c for c in C if not up_to_date(os.path.join(OUT, f"pess_{c[0][0]}_a{c[0][1]}_s{c[0][2]}.json"), c[1])]
+    print(f"{len(C)} cells with solves; {len(todo)} to evaluate (new, or with solves added since) "
+          f"on {a.workers} workers", flush=True)
     t0 = time.time()
     with Pool(a.workers, initializer=init, initargs=(a.eps,)) as pool:
         for i, msg in enumerate(pool.imap_unordered(evaluate_cell, todo), 1):

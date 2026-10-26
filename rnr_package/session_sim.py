@@ -52,6 +52,7 @@ from rnr_general import own_reach_sa
 from tree_engine import Tree
 
 MIN_W = 1e-5            # hypotheses with less posterior weight are left out of predictions
+PROJ_GRID = [round(0.05 * k, 2) for k in range(1, 13)]     # tilts a strategy is projected onto
 
 
 # ------------------------------------------------------------------ strategies
@@ -63,6 +64,7 @@ class Strategies:
         self.T, self.base_table = T, base_table
         self.base = [T.from_table(base_table, q) for q in range(3)]
         self.isum = [np.bincount(T.sai[q], weights=self.base[q], minlength=T.nI[q]) for q in range(3)]
+        self._grid = {}
 
     def tilt(self, q, t, a):
         """Seat q's equilibrium strategy tilted toward type t's action by alpha a."""
@@ -83,6 +85,26 @@ class Strategies:
             lo, hi = T.off[q][i], T.off[q][i + 1]
             out[key] = {int(T.saa[q][j]): float(flat[j]) for j in range(lo, hi)}
         return out
+
+    def project(self, q, flat, reach_profile):
+        """Seat q's strategy `flat` projected onto its nearest tilt of the equilibrium (the equilibrium
+        itself, or R/C/F at alpha 0.05 ... 0.6), by total variation weighted as in tv(): (type, alpha,
+        distance). A large distance means no tilt describes how the player is actually playing."""
+        T = self.T
+        if q not in self._grid:
+            self._grid[q] = [("O", 0.0, self.base[q])] + [(t, a, self.tilt(q, t, a)) for t in TILTS for a in PROJ_GRID]
+        idx = T.kmask[q]
+        r = T.reach(T.edge_probs(reach_profile, skip=q))
+        w = np.zeros(T.nSA[q]); w[T.esa[idx]] = r[T.parent[idx]]
+        wI = np.bincount(T.sai[q], weights=w, minlength=T.nI[q]) / T.nact[q]
+        den = max(wI.sum(), 1e-12)
+        best = None
+        for t, a, tilt in self._grid[q]:
+            d = np.bincount(T.sai[q], weights=0.5 * np.abs(flat - tilt), minlength=T.nI[q])
+            dist = float((d * wI).sum() / den)
+            if best is None or dist < best[0]:
+                best = (dist, t, a)
+        return best[1], best[2], best[0]
 
     def tv(self, q, a, b, reach_profile):
         """Total variation between two strategies of seat q, weighted by how often play reaches
@@ -150,6 +172,18 @@ class Adaptive:
                                  forget=getattr(args, "forget", 1.0), switch=getattr(args, "switch", 0.0))
         self.label = f"adaptive({base_spec or 'O'})"
         self.conf, self.map_types, self.alphas, self.used = 0.0, ("O", "O"), (0.0, 0.0), "base"
+        self.committed, self.cell = False, None
+        if args.mode == "rnr":                              # restricted responses from this seat's bank
+            import adapt_policies as apol
+            self.apol = apol
+            self.rbank = apol.load_bank(pess=True, seat=seat)
+            self.p0flat = np.load(next(b["paths"][0.0] for b in self.rbank.values() if 0.0 in b["paths"]))
+            self.labels = sorted({apol.nearest_cell_label(t, a) for t, a in self.gi.hyp})
+            ix = {l: i for i, l in enumerate(self.labels)}
+            self.A = np.zeros((self.gi.H, len(self.labels)))
+            for h, (t, a) in enumerate(self.gi.hyp):
+                self.A[h, ix[apol.nearest_cell_label(t, a)]] = 1
+            self._tabs = {}
 
     def observe(self, hist, cards, showdown):
         self.gi.update(hist, cards, showdown)
@@ -178,6 +212,8 @@ class Adaptive:
         self.alphas = (summ[o1]["alpha_mean"], summ[o2]["alpha_mean"])
         w = self.conf ** self.args.beta
         T = self.S.T
+        if self.args.mode == "rnr":
+            return self._from_rnr_bank(P)
         if self.args.mode == "bank":
             pick = self._from_bank(P)
             if pick is not None:
@@ -192,6 +228,26 @@ class Adaptive:
         self.flat = (1 - w) * self.base_flat + w * br
         self.used = f"bbr w={w:.2f}"
         self.tab = self.S.table(self.seat, self.flat)
+
+    def _from_rnr_bank(self, P):
+        """Step policy on this seat's bank: below confidence tau keep the base style (before ever
+        committing) or play p = 0 (after); above it, the most likely cell's restricted response at its
+        pessimistic p*, or p = 0 if that cell is not in the bank."""
+        mass = self.A.T @ P @ self.A
+        i, j = np.unravel_index(np.argmax(mass), mass.shape)
+        self.cell = self.labels[i] + self.labels[j]
+        key = "base" if not self.committed else "p0"
+        if self.conf > getattr(self.args, "tau", 0.5):
+            self.committed = True
+            b = self.rbank.get(self.cell)
+            key = (f"{self.apol.cell_str(self.cell)}|{b['pstar']:g}"
+                   if b and b["pstar"] > 0 and b["pstar"] in b["paths"] else "p0")
+        if key not in self._tabs:
+            flat = (self.base_flat if key == "base" else self.p0flat if key == "p0"
+                    else np.load(self.rbank[self.cell]["paths"][float(key.split("|")[1])]))
+            self._tabs[key] = (flat, self.S.table(self.seat, flat))
+        self.flat, self.tab = self._tabs[key]
+        self.used = key
 
     def _from_bank(self, P):
         """Nearest bank entry for the most likely types; p from confidence. None if no entry."""
@@ -233,12 +289,13 @@ def run_session(agents, S, game, args, rng):
         prof = [a.flat for a in agents]
         ev = T.ev(prof)
         eq = T.ev(S.base)
-        row = dict(hand=hand, ev=[float(ev[q] - eq[q]) for q in range(3)], agents=[])
+        row = dict(hand=hand, ev=[float(ev[q] - eq[q]) for q in range(3)], agents=[],
+                   proj=[dict(zip(("type", "alpha", "dist"), S.project(q, agents[q].flat, prof))) for q in range(3)])
         for q, a in enumerate(agents):
             info = dict(label=a.label)
             if isinstance(a, Adaptive):
                 info.update(conf=a.conf, types="".join(a.map_types), alphas=list(a.alphas), used=a.used,
-                            change=S.tv(q, prev[q], a.flat, prof))
+                            opps=a.opps, change=S.tv(q, prev[q], a.flat, prof))
             elif isinstance(a, Fixed):
                 info.update(change=S.tv(q, prev[q], a.flat, prof))
             row["agents"].append(info)
@@ -281,6 +338,39 @@ def report(res, specs):
           ", ".join(f"seat {q} {m[q]:+.3f} +/- {se[q]:.3f}" for q in range(3)))
 
 
+def plot_chase(path, session=0):
+    """Per seat: how it actually plays (projection onto its nearest tilt) against what each opponent
+    believes it is; and how far the actual play is from ANY tilt (the projection's distance)."""
+    import matplotlib; matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    D = json.load(open(path)); tr = D["sessions"][session]["trace"]; h = [r["hand"] for r in tr]
+    fig, axs = plt.subplots(2, 3, figsize=(16, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1.3]})
+    for q in range(3):
+        ax = axs[0, q]
+        ax.plot(h, [r["proj"][q]["alpha"] for r in tr], "k-o", lw=2, ms=4, label="how it actually plays")
+        for i, r in enumerate(tr):
+            ax.annotate(r["proj"][q]["type"], (h[i], r["proj"][q]["alpha"]), textcoords="offset points", xytext=(0, 6),
+                        ha="center", fontsize=8)
+        for j in range(3):
+            if j == q or "opps" not in tr[-1]["agents"][j]:
+                continue
+            k = tr[-1]["agents"][j]["opps"].index(q)
+            est_a = [r["agents"][j]["alphas"][k] if "alphas" in r["agents"][j] else 0.0 for r in tr]
+            est_t = [r["agents"][j]["types"][k] if "types" in r["agents"][j] else "O" for r in tr]
+            style = "--" if j == min(x for x in range(3) if x != q) else ":"     # overlapping beliefs stay visible
+            ax.plot(h, est_a, style, lw=2 if style == ":" else 1.5, color=f"C{j}", label=f"what seat {j} believes")
+            for i in range(len(tr)):
+                ax.annotate(est_t[i], (h[i], est_a[i]), textcoords="offset points", xytext=(0, -11), ha="center",
+                            fontsize=7, color=f"C{j}")
+        ax.set_title(f"seat {q}: {D['specs'][q]}", fontsize=10); ax.set_ylabel("alpha (letter = type)")
+        ax.set_ylim(-0.05, 0.7); ax.legend(fontsize=7, loc="upper right")
+        axs[1, q].plot(h, [r["proj"][q]["dist"] for r in tr], "k-", lw=1.5)
+        axs[1, q].set_ylabel("distance to\nnearest tilt"); axs[1, q].set_xlabel("hand")
+    fig.suptitle("The chase: how each player actually plays vs what its opponents believe", fontsize=12)
+    plt.tight_layout(); out = path.replace(".json", "_chase.png"); plt.savefig(out, dpi=110)
+    print("plot:", out)
+
+
 def plot(path):
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -308,7 +398,10 @@ def main():
     ap.add_argument("--seat2", default="R:0.2")
     ap.add_argument("--hands", type=int, default=400); ap.add_argument("--sessions", type=int, default=1)
     ap.add_argument("--every", type=int, default=25, help="recompute adaptive strategies every N hands")
-    ap.add_argument("--mode", choices=["bbr", "bank"], default="bbr")
+    ap.add_argument("--mode", choices=["bbr", "bank", "rnr"], default="bbr",
+                    help="rnr: restricted responses from each seat's own bank (largest safe p, pessimistic)")
+    ap.add_argument("--tau", type=float, default=0.5, help="rnr mode: confidence needed to commit")
+    ap.add_argument("--plot-chase", default=None, help="plot projections vs perceived models for a saved run")
     ap.add_argument("--beta", type=float, default=1.0, help="w (or p / p_max) = confidence ** beta")
     ap.add_argument("--p-max", type=float, default=0.5, help="bank mode: largest p used")
     ap.add_argument("--tremble", type=float, default=0.01, help="identifier's random-play allowance")
@@ -323,6 +416,8 @@ def main():
     a = ap.parse_args()
     if a.plot:
         return plot(a.plot)
+    if a.plot_chase:
+        return plot_chase(a.plot_chase)
     game = pyspiel.load_game("leduc_poker", {"players": 3})
     T = Tree(); S = Strategies(T, pickle.load(open(find_cfr(), "rb"))["table"])
     specs = [a.seat0, a.seat1, a.seat2]

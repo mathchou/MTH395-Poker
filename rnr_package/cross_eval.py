@@ -17,6 +17,13 @@ Model errors are grouped by how far the true opponents are from the model:
     python cross_eval.py --workers 8          # ~15 min for 63 x 63 cells (seat 0)
     python cross_eval.py --report
     python cross_eval.py --plot               # cross_eval/cross_eval_s0.png
+
+The full bank matrix (every solved strategy at EVERY p, not just p*, against every cell's
+opponents) and the question it answers -- is the true model's own restricted-response curve the
+best a seat-0 player can do safely, or do strategies solved for other models do better?
+
+    python cross_eval.py --all-p --workers 8  # every bank strategy x every cell (several hours)
+    python cross_eval.py --envelope           # own curve vs the whole bank, for every cell
 """
 
 import argparse
@@ -54,13 +61,17 @@ def run(a):
     bank = G["bank"]
     models = sorted(c for c, b in bank.items() if b["pstar"] > 0 and b["pstar"] in b["paths"])[: a.cells]
     truths = sorted(bank)[: a.cells]
-    need = {(f"{ap.cell_str(m)}|{bank[m]['pstar']:g}", truth_specs(t)) for m in models for t in truths}
+    if a.all_p:                                   # every solved strategy, not only each cell's p*
+        keys = [f"{ap.cell_str(m)}|{p:g}" for m in sorted(bank)[: a.cells] for p in sorted(bank[m]["paths"]) if p > 0]
+    else:
+        keys = [f"{ap.cell_str(m)}|{bank[m]['pstar']:g}" for m in models]
+    need = {(k, truth_specs(t)) for k in keys for t in truths}
     need |= {(k, truth_specs(t)) for t in truths for k in ("cfr", "p0")}
     os.makedirs(OUT, exist_ok=True)
     cache_f = os.path.join(OUT, "evals_s0.json")
     cache = json.load(open(cache_f)) if os.path.exists(cache_f) else {}
     todo = [p for p in need if f"{p[0]}||{p[1]}" not in cache]
-    print(f"{len(models)} model cells x {len(truths)} true cells; {len(todo)} of {len(need)} evaluations to run "
+    print(f"{len(keys)} strategies x {len(truths)} true cells; {len(todo)} of {len(need)} evaluations to run "
           f"on {a.workers} workers", flush=True)
     t0 = time.time()
     with Pool(a.workers, initializer=init, initargs=(a.pess,)) as pool:
@@ -116,6 +127,50 @@ def report(a):
           "opponents (pessimistic punisher). still profitable: at least +0.05 over that strategy.")
 
 
+def envelope(a):
+    """For every true cell: the best SAFE expected payoff on the true model's own curve vs in the whole bank."""
+    init(a.pess)
+    bank = G["bank"]
+    cache = json.load(open(os.path.join(OUT, "evals_s0.json")))
+    rows = []
+    for t in sorted(bank):
+        ts = truth_specs(t)
+        if f"cfr||{ts}" not in cache or f"p0||{ts}" not in cache:
+            continue
+        wb = max(cache[f"cfr||{ts}"]["worst"], cache[f"p0||{ts}"]["worst"])
+        gb = max(cache[f"cfr||{ts}"]["ev"], cache[f"p0||{ts}"]["ev"])
+        own, every, n = [0.0], [(0.0, "baseline")], 0
+        for m in bank:
+            for p in bank[m]["paths"]:
+                if p == 0:
+                    continue
+                k = f"{ap.cell_str(m)}|{p:g}"; v = cache.get(f"{k}||{ts}")
+                if v is None:
+                    continue
+                n += 1
+                if v["worst"] >= wb - TOL:
+                    every.append((v["ev"] - gb, k))
+                    if m == t:
+                        own.append(v["ev"] - gb)
+        best = max(every)
+        rows.append(dict(t=ts, own=max(own), bank=best[0], key=best[1], n=n,
+                         same_types=best[1] != "baseline" and best[1].split("|")[0] != ts and
+                         (best[1][0], best[1].split("-")[1][0]) == (ts[0], ts.split("-")[1][0])))
+    if not rows:
+        raise SystemExit("no evaluations yet: run with --all-p first")
+    gap = np.array([r["bank"] - r["own"] for r in rows])
+    print(f"{len(rows)} true cells, ~{int(np.median([r['n'] for r in rows]))} bank strategies scored against each")
+    print(f"best safe profit on the true model's own curve:  median {np.median([r['own'] for r in rows]):+.3f}")
+    print(f"best safe profit anywhere in the bank:           median {np.median([r['bank'] for r in rows]):+.3f}")
+    print(f"gap (bank minus own): median {np.median(gap):+.3f}; above 0.05 in {np.mean(gap > 0.05):.0%} of cells; "
+          f"above 0.20 in {np.mean(gap > 0.20):.0%}; own curve is (within 0.01) the best in {np.mean(gap < 0.01):.0%}")
+    print(f"when another strategy wins, it was solved for the same types (different alphas) in "
+          f"{np.mean([r['same_types'] for r in rows if r['bank'] - r['own'] > 0.05]):.0%} of cases")
+    print("largest gaps:")
+    for r in sorted(rows, key=lambda r: r["own"] - r["bank"])[:8]:
+        print(f"  true {r['t']}: own curve {r['own']:+.3f}, bank {r['bank']:+.3f} ({r['key']})")
+
+
 def plot(a):
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
     models, truths, rows = table(a)
@@ -141,13 +196,17 @@ def main():
     p.add_argument("--pess", action="store_true", help="p* from the pessimistic re-evaluation")
     p.add_argument("--report", action="store_true"); p.add_argument("--plot", action="store_true")
     p.add_argument("--cells", type=int, default=None, help="testing: only the first N cells")
+    p.add_argument("--all-p", action="store_true", help="every solved strategy, not only p* (the bank matrix)")
+    p.add_argument("--envelope", action="store_true", help="own curve vs the whole bank, for every cell")
     a = p.parse_args()
     if a.report:
         return report(a)
     if a.plot:
         return plot(a)
+    if a.envelope:
+        return envelope(a)
     run(a)
-    report(a)
+    envelope(a) if a.all_p else report(a)
 
 
 if __name__ == "__main__":
