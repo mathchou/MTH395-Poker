@@ -1,0 +1,118 @@
+{
+ "pair": "CF",
+ "alpha": 0.2,
+ "alpha2": 0.05,
+ "seat": 0,
+ "rows": [
+  {
+   "w": 0.0,
+   "vs_biased": -0.03143925983170384,
+   "adversary_seat1": -0.31358519669435625,
+   "selfish_seat1": -0.17336795952590695,
+   "adversary_seat2": -0.2540716579862624,
+   "selfish_seat2": -0.19513266621620248,
+   "worst_adversary": -0.31358519669435625,
+   "worst_selfish": -0.19513266621620248
+  },
+  {
+   "w": 0.1,
+   "vs_biased": -0.009605121728712862,
+   "adversary_seat1": -0.3475481952162208,
+   "selfish_seat1": -0.155687764112052,
+   "adversary_seat2": -0.32133194396730025,
+   "selfish_seat2": -0.18494587345960423,
+   "worst_adversary": -0.3475481952162208,
+   "worst_selfish": -0.18494587345960423
+  },
+  {
+   "w": 0.2,
+   "vs_biased": 0.012927238356382681,
+   "adversary_seat1": -0.4413540974364145,
+   "selfish_seat1": -0.27079396348229695,
+   "adversary_seat2": -0.43130834054324996,
+   "selfish_seat2": -0.27905483684790466,
+   "worst_adversary": -0.4413540974364145,
+   "worst_selfish": -0.27905483684790466
+  },
+  {
+   "w": 0.3,
+   "vs_biased": 0.036325277255750105,
+   "adversary_seat1": -0.5568263702521934,
+   "selfish_seat1": -0.3753189679937899,
+   "adversary_seat2": -0.6490160384655818,
+   "selfish_seat2": -0.5339385610734697,
+   "worst_adversary": -0.6490160384655818,
+   "worst_selfish": -0.5339385610734697
+  },
+  {
+   "w": 0.4,
+   "vs_biased": 0.06076077632556111,
+   "adversary_seat1": -0.7028655938783825,
+   "selfish_seat1": -0.5602704393296489,
+   "adversary_seat2": -0.9259311859357237,
+   "selfish_seat2": -0.8241188631133063,
+   "worst_adversary": -0.9259311859357237,
+   "worst_selfish": -0.8241188631133063
+  },
+  {
+   "w": 0.5,
+   "vs_biased": 0.08640983808667145,
+   "adversary_seat1": -0.8702089061781477,
+   "selfish_seat1": -0.7172766974061257,
+   "adversary_seat2": -1.2719581389906454,
+   "selfish_seat2": -1.1878500106302168,
+   "worst_adversary": -1.2719581389906454,
+   "worst_selfish": -1.1878500106302168
+  },
+  {
+   "w": 0.6,
+   "vs_biased": 0.11345288286530364,
+   "adversary_seat1": -1.0517004288467182,
+   "selfish_seat1": -0.8950129295325067,
+   "adversary_seat2": -1.6807222058762288,
+   "selfish_seat2": -1.5967623524312529,
+   "worst_adversary": -1.6807222058762288,
+   "worst_selfish": -1.5967623524312529
+  },
+  {
+   "w": 0.7,
+   "vs_biased": 0.14207464543372755,
+   "adversary_seat1": -1.2597234155204655,
+   "selfish_seat1": -1.1358172984582915,
+   "adversary_seat2": -2.134022080951635,
+   "selfish_seat2": -2.0531053996956694,
+   "worst_adversary": -2.134022080951635,
+   "worst_selfish": -2.0531053996956694
+  },
+  {
+   "w": 0.8,
+   "vs_biased": 0.1724641716509424,
+   "adversary_seat1": -1.500595229456506,
+   "selfish_seat1": -1.3721120191357468,
+   "adversary_seat2": -2.6430884570129614,
+   "selfish_seat2": -2.5639595963918467,
+   "worst_adversary": -2.6430884570129614,
+   "worst_selfish": -2.5639595963918467
+  },
+  {
+   "w": 0.9,
+   "vs_biased": 0.2048148151033572,
+   "adversary_seat1": -1.769122627074728,
+   "selfish_seat1": -1.6765814678789543,
+   "adversary_seat2": -3.2233273933112043,
+   "selfish_seat2": -3.132503026795759,
+   "worst_adversary": -3.2233273933112043,
+   "worst_selfish": -3.132503026795759
+  },
+  {
+   "w": 1.0,
+   "vs_biased": 0.23932423374547251,
+   "adversary_seat1": -2.0685217438377843,
+   "selfish_seat1": -1.9702029161913925,
+   "adversary_seat2": -3.860815420505367,
+   "selfish_seat2": -3.7547254797863205,
+   "worst_adversary": -3.860815420505367,
+   "worst_selfish": -3.7547254797863205
+  }
+ ]
+}

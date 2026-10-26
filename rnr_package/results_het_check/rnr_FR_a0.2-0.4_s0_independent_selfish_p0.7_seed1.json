@@ -1,0 +1,22 @@
+{
+ "pair": "FR",
+ "alpha": 0.2,
+ "alpha2": 0.4,
+ "seat": 0,
+ "p": 0.7,
+ "restrict": "independent",
+ "free": "selfish",
+ "iters": 600,
+ "gaps": {
+  "learner": 0.00026180631789984865,
+  "free_1": 0.0006142919122442692,
+  "free_2": 0.0008478545553810557
+ },
+ "vs_biased": 0.7318170728824414,
+ "adversary_seat1": -0.3245374292333832,
+ "selfish_seat1": 0.09090603632400891,
+ "adversary_seat2": -0.4299128899670822,
+ "selfish_seat2": -0.14234280611232847,
+ "worst_adversary": -0.4299128899670822,
+ "worst_selfish": -0.14234280611232847
+}

@@ -40,6 +40,7 @@ opponents) pair is evaluated once and cached.
     python adapt_policies.py                    # simulate, evaluate, report (resumable)
     python adapt_policies.py --report
     python adapt_policies.py --pess             # p* from the pessimistic re-evaluation (own folder)
+    python adapt_policies.py --pess --scenarios switches --policies step0.5 sel selb br0.5
 """
 
 import argparse
@@ -63,7 +64,19 @@ SCENARIOS = {                       # name: (seat 1 spec, seat 2 spec)
     "FR_offGrid": ("F:0.3", "R:0.3"),
     "switch_F_to_R": ("F:0.35>R:0.3@200", "O"),
     "switch_FR_to_RR": ("F:0.4>R:0.4@150", "R:0.2"),     # two deviators throughout: speed matters
+    # A 2 x 2 x 2 design of switches at hand 150 (all on the grid, so only staleness is tested):
+    # what changes (type / degree) x lone or two deviators x who switches (seat 1 acts right after
+    # seat 0, seat 2 right before it). Run them all with --scenarios switches.
+    "sw_type_lone_after": ("F:0.4>R:0.4@150", "O"),
+    "sw_type_lone_before": ("O", "F:0.4>R:0.4@150"),
+    "sw_type_two_after": ("R:0.4>C:0.4@150", "F:0.4"),
+    "sw_type_two_before": ("F:0.4", "C:0.4>F:0.4@150"),
+    "sw_deg_lone_after": ("F:0.2>F:0.6@150", "O"),
+    "sw_deg_lone_before": ("O", "R:0.6>R:0.2@150"),
+    "sw_deg_two_after": ("R:0.6>R:0.2@150", "C:0.4"),
+    "sw_deg_two_before": ("R:0.4", "F:0.2>F:0.6@150"),
 }
+SWITCHES = ["switch_F_to_R", "switch_FR_to_RR"] + [k for k in SCENARIOS if k.startswith("sw_")]
 POLICIES = ["step0.5", "step0.9", "ramp1", "notch0.5", "nbhd0.5", "sel", "selb", "br0.5"]
 
 
@@ -434,6 +447,8 @@ def main():
     ap.add_argument("--switch", type=float, default=0.0, help="identifier fixed-share rate (0 = none)")
     ap.add_argument("--time-one", action="store_true"); ap.add_argument("--report", action="store_true")
     a = ap.parse_args()
+    if a.scenarios == ["switches"]:
+        a.scenarios = SWITCHES
     global OUT
     OUT = "adapt_pess" if a.pess else "adapt"       # p* differs, so simulations must not be shared
     if a.forget < 1.0:

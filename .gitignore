@@ -14,3 +14,9 @@ overnight/
 *.log
 *.png
 *.zip
+
+# regenerable run outputs
+rnr_package/adapt/
+rnr_package/adapt_pess*/
+rnr_package/chase*.json
+rnr_package/chase/
